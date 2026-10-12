@@ -27,7 +27,7 @@ import { OmeZarrStoreError, isOmeZarrAttrs } from "../image-orthographic/ome";
 
 const log = createLogger("profile");
 import type { ZarrProfile } from "../../profile";
-import { geographicBounds } from "../../data-bounds";
+import { boundsFromEpsgCode } from "../../data-bounds";
 import { buildDimLabel } from "./cf-coords";
 import { ScalarGridControls } from "./controls";
 import { makeScalarGridTileLoader } from "./tile-loader";
@@ -870,20 +870,36 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
 
   initialBounds: () => [-180, -90, 180, 90],
 
-  // Geographic (lat/lon) data extent for the optional intro fly-in. Projected
-  // grids carry `proj:wkt2` instead of `proj:code` and override this.
-  dataBounds: (ctx) => {
-    const attrs = ctx.spatialAttrs as ScalarGridSpatialAttrs | undefined;
-    if (!attrs || attrs["proj:code"] !== "EPSG:4326") return null;
-    return geographicBounds(attrs["spatial:transform"], attrs["spatial:shape"]);
+  // Geographic (lat/lon) data extent for the optional intro fly-in. Uses the
+  // per-variable spatial attrs for multi-projection stores (e.g. multi-UTM-zone
+  // stores where each child group carries its own `proj:code`). Projected grids
+  // that carry `proj:wkt2` instead of `proj:code` override this method.
+  dataBounds: (ctx, state) => {
+    const attrs = (
+      ctx.variableSpatialAttrs.get(state.variable) ?? ctx.spatialAttrs
+    ) as Record<string, unknown> | undefined;
+    if (!attrs) return null;
+    const transform = attrs["spatial:transform"] as readonly number[] | undefined;
+    const shape = attrs["spatial:shape"] as readonly number[] | undefined;
+    const projCode = attrs["proj:code"];
+    if (!transform || !shape || typeof projCode !== "string") return null;
+    return boundsFromEpsgCode(transform, shape, projCode);
   },
 
-  // Native resolution (degrees/pixel) for the "zoom to your location" button.
-  nativeResolution: (ctx) => {
-    const attrs = ctx.spatialAttrs as ScalarGridSpatialAttrs | undefined;
-    if (!attrs || attrs["proj:code"] !== "EPSG:4326") return null;
-    const step = Math.abs(attrs["spatial:transform"]?.[0] ?? 0);
-    return step > 0 ? { kind: "degrees", value: step } : null;
+  // Native resolution for the "zoom to your location" button. Uses per-variable
+  // attrs and returns ground-meters for projected CRS (UTM, etc.).
+  nativeResolution: (ctx, state) => {
+    const attrs = (
+      ctx.variableSpatialAttrs.get(state.variable) ?? ctx.spatialAttrs
+    ) as Record<string, unknown> | undefined;
+    if (!attrs) return null;
+    const projCode = attrs["proj:code"];
+    const step = Math.abs(
+      (attrs["spatial:transform"] as readonly number[] | undefined)?.[0] ?? 0,
+    );
+    if (!(step > 0)) return null;
+    if (projCode === "EPSG:4326") return { kind: "degrees" as const, value: step };
+    return { kind: "ground-meters" as const, value: step };
   },
 
   Controls: ScalarGridControls,

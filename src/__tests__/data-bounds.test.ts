@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  boundsFromEpsgCode,
   boundsFromProjection,
   geographicBounds,
   mercatorBounds,
@@ -92,5 +93,46 @@ describe("boundsFromProjection (explicit projection fn)", () => {
       throw new Error("nope");
     };
     expect(boundsFromProjection([1, 0, 0, 0, -1, 10], [10, 10], boom)).toBeNull();
+  });
+});
+
+describe("boundsFromEpsgCode (proj4 built-in EPSG definitions)", () => {
+  it("EPSG:4326 matches geographicBounds (no network, direct shortcut)", () => {
+    const transform = [0.25, 0, -10, 0, -0.25, 50];
+    const shape = [200, 400];
+    expect(boundsFromEpsgCode(transform, shape, "EPSG:4326")).toEqual(
+      geographicBounds(transform, shape),
+    );
+  });
+
+  it("EPSG:32601 (UTM zone 1 north) reprojects to a plausible lng/lat bbox", () => {
+    // utm01 extent from OlmoEarth: [0, -9175040, 983040, 9502720] in UTM metres.
+    // Affine: step=10 m/px, origin (0, 9502720), shape [1867776, 98304].
+    const transform = [10, 0, 0, 0, -10, 9502720];
+    const shape = [1867776, 98304];
+    const b = boundsFromEpsgCode(transform, shape, "EPSG:32601");
+    expect(b).not.toBeNull();
+    const [w, s, e, n] = b!;
+    expect([w, s, e, n].every(Number.isFinite)).toBe(true);
+    expect(s).toBeLessThan(n);
+    // UTM zone 1 straddles the anti-meridian (180°W = 180°E). The western
+    // extent (easting ≈ 0 m) maps to ~178°E (positive longitude) in the
+    // [-180, 180] range, so transformBounds produces a wide span: w ≈ -177,
+    // e ≈ 179. The bounds are finite and cover most of the globe.
+    expect(w).toBeGreaterThan(-180);
+    expect(e).toBeGreaterThan(170); // wraps to near +180
+    // North/south extent covers most of the globe for this dataset.
+    expect(s).toBeLessThan(-70);
+    expect(n).toBeGreaterThan(70);
+  });
+
+  it("returns null for an EPSG code not in proj4's built-in registry", () => {
+    const transform = [10, 0, 0, 0, -10, 100];
+    const shape = [10, 10];
+    expect(boundsFromEpsgCode(transform, shape, "EPSG:99999")).toBeNull();
+  });
+
+  it("returns null on a malformed transform", () => {
+    expect(boundsFromEpsgCode([10, 0], [10, 10], "EPSG:32601")).toBeNull();
   });
 });

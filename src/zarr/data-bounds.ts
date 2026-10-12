@@ -105,6 +105,28 @@ export function boundsFromProjection(
   }
 }
 
+/** Affine in a known EPSG-code CRS + its code → lng/lat bbox, using proj4's
+ * built-in definitions (covers all WGS84 UTM zones: EPSG:326XX/327XX, and
+ * geographic EPSG:4326). Returns `null` when the code is not registered in
+ * proj4 or on projection failure. Wraps {@link boundsFromProjection}. */
+export function boundsFromEpsgCode(
+  transform: readonly number[],
+  shape: readonly number[],
+  projCode: string,
+): LngLatBounds | null {
+  if (projCode === "EPSG:4326") {
+    return geographicBounds(transform, shape);
+  }
+  try {
+    const converter = proj4(projCode, "EPSG:4326");
+    const project = (x: number, y: number): [number, number] =>
+      converter.forward([x, y], false) as [number, number];
+    return boundsFromProjection(transform, shape, project);
+  } catch {
+    return null;
+  }
+}
+
 /** Affine in a projected CRS (metres) + its WKT2 → lng/lat bbox, via the same
  * proj4/`parseWkt` path the render layer uses. Returns `null` on any parse
  * failure. Thin wrapper over {@link boundsFromProjection}. */
