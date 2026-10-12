@@ -606,6 +606,7 @@ export const multiscaleGridProfile: ZarrProfile<
           label: v.longName ?? v.name,
           value: Number.isNaN(value) ? null : value,
           units: v.units,
+          ...(!isGeographicCrs(p.crsCode) && { projectedX: sx, projectedY: sy }),
         };
       }
     }

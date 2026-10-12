@@ -150,6 +150,7 @@ export default function App() {
     x: number;
     y: number;
     lines: string[];
+    mutedFrom: number;
   } | null>(null);
   const hoverRaf = useRef<number | null>(null);
   const hoverPt = useRef<{
@@ -264,14 +265,17 @@ export default function App() {
           res.value === null
             ? "no data"
             : `${formatNumber(res.value)}${res.units ? ` ${res.units}` : ""}`;
+        const coordLines: string[] = [
+          `Lat: ${pt.lat.toFixed(5)}°  Lon: ${pt.lng.toFixed(5)}°`,
+        ];
+        if (res.projectedX !== undefined && res.projectedY !== undefined) {
+          coordLines.push(`X: ${res.projectedX.toFixed(1)}  Y: ${res.projectedY.toFixed(1)}`);
+        }
         setHover({
           x: pt.px,
           y: pt.py,
-          lines: [
-            res.label,
-            valueText,
-            `${pt.lat.toFixed(3)}, ${pt.lng.toFixed(3)}`,
-          ],
+          lines: [res.label, valueText, ...coordLines],
+          mutedFrom: 2,
         });
       });
     },
@@ -982,11 +986,7 @@ export default function App() {
             {hover.lines.map((line, i) => (
               <div
                 key={i}
-                style={
-                  i === hover.lines.length - 1
-                    ? { color: "var(--text-muted)" }
-                    : undefined
-                }
+                style={i >= hover.mutedFrom ? { color: "var(--text-muted)" } : undefined}
               >
                 {line}
               </div>
