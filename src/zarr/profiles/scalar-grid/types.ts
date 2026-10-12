@@ -1,5 +1,6 @@
 import type * as zarr from "zarrita";
 import type { ProfileBaseContext } from "../../profile";
+import type { LngLatBounds } from "../../data-bounds";
 
 /** A non-spatial (leading) dimension of a variable — gets a slider. */
 export type ScalarGridDim = {
@@ -71,6 +72,10 @@ export type ScalarGridContext = ProfileBaseContext & {
    * `spatial:transform`/`proj:code` (e.g. multi-UTM-zone stores). Empty for
    * root-native and synthesized stores; consumers fall back to `spatialAttrs`. */
   variableSpatialAttrs: Map<string, unknown>;
+  /** Geographic bounding box for every variable, keyed by variable name.
+   * `null` when a variable's bounds could not be computed (unsupported CRS or
+   * malformed attrs). Used by App.tsx to draw coverage outlines on the map. */
+  variableBounds: Map<string, LngLatBounds | null>;
   /** Where {@link spatialAttrs} came from (drives the Structure panel). */
   metadataSource: "store-native" | "synthesized";
   /** True when the store's longitude runs 0..360 (e.g. GFS). The synthesized

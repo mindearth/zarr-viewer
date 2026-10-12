@@ -27,7 +27,7 @@ import { OmeZarrStoreError, isOmeZarrAttrs } from "../image-orthographic/ome";
 
 const log = createLogger("profile");
 import type { ZarrProfile } from "../../profile";
-import { boundsFromEpsgCode } from "../../data-bounds";
+import { boundsFromEpsgCode, type LngLatBounds } from "../../data-bounds";
 import { buildDimLabel } from "./cf-coords";
 import { ScalarGridControls } from "./controls";
 import { makeScalarGridTileLoader } from "./tile-loader";
@@ -645,6 +645,7 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
         arrays,
         spatialAttrs: {},
         variableSpatialAttrs: new Map(),
+        variableBounds: new Map(),
         metadataSource: "synthesized" as const,
         rollLongitude: false,
         minRenderZoom: 0,
@@ -821,6 +822,20 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
       }
     }
 
+    const variableBounds = new Map<string, LngLatBounds | null>();
+    for (const v of variables) {
+      const attrs = (variableSpatialAttrs.get(v.name) ?? spatialAttrs) as Record<string, unknown>;
+      const transform = attrs?.["spatial:transform"] as readonly number[] | undefined;
+      const shape = attrs?.["spatial:shape"] as readonly number[] | undefined;
+      const projCode = attrs?.["proj:code"];
+      variableBounds.set(
+        v.name,
+        transform && shape && typeof projCode === "string"
+          ? boundsFromEpsgCode(transform, shape, projCode)
+          : null,
+      );
+    }
+
     done();
     return {
       url,
@@ -830,6 +845,7 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
       arrays,
       spatialAttrs,
       variableSpatialAttrs,
+      variableBounds,
       metadataSource,
       rollLongitude,
       minRenderZoom,

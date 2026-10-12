@@ -1,5 +1,6 @@
 import type { MapboxOverlayProps } from "@deck.gl/mapbox";
 import { MapboxOverlay } from "@deck.gl/mapbox";
+import { PathLayer } from "@deck.gl/layers";
 import {
   createColormapTexture,
   decodeColormapSprite,
@@ -642,6 +643,41 @@ export default function App() {
     node,
   ]);
 
+  // Bounding-box outlines for every variable's geographic coverage. Only
+  // shown when the profile provides per-variable bounds (multi-UTM-zone stores).
+  const boundsLayer = useMemo(() => {
+    if (!profileCtx) return null;
+    const vb = (profileCtx as { variableBounds?: Map<string, [number, number, number, number] | null> })
+      .variableBounds;
+    if (!vb || vb.size <= 1) return null; // single-variable: bounds outline adds no info
+    const selectedVar =
+      profileState && "variable" in profileState
+        ? (profileState as { variable: string }).variable
+        : null;
+    type BoundsItem = { variable: string; path: [number, number][]; selected: boolean };
+    const data: BoundsItem[] = [];
+    for (const [variable, bounds] of vb) {
+      if (!bounds) continue;
+      const [w, s, e, n] = bounds;
+      data.push({
+        variable,
+        path: [[w, s], [e, s], [e, n], [w, n]],
+        selected: variable === selectedVar,
+      });
+    }
+    if (data.length === 0) return null;
+    return new PathLayer<BoundsItem>({
+      id: "variable-bounds",
+      data,
+      getPath: (d) => d.path,
+      getColor: (d) => (d.selected ? [255, 220, 0, 230] : [200, 200, 200, 100]),
+      getWidth: (d) => (d.selected ? 2 : 1),
+      widthUnits: "pixels",
+      loop: true,
+      pickable: false,
+    });
+  }, [profileCtx, profileState]);
+
   const handleFlyTo = useCallback(
     (longitude: number, latitude: number, zoom: number) => {
       const map = mapRef.current;
@@ -814,7 +850,7 @@ export default function App() {
         onMouseOut={handleHoverOut}
       >
         <DeckGLOverlay
-          layers={layer ? [layer] : []}
+          layers={[layer, boundsLayer].filter((l): l is NonNullable<typeof l> => l != null)}
           interleaved
           // Deck writes `cursor` inline on the shared canvas container on every
           // pointer move (default grab/grabbing), which overrides any CSS — so
