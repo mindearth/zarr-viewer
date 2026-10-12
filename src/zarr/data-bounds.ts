@@ -108,7 +108,13 @@ export function boundsFromProjection(
 /** Affine in a known EPSG-code CRS + its code → lng/lat bbox, using proj4's
  * built-in definitions (covers all WGS84 UTM zones: EPSG:326XX/327XX, and
  * geographic EPSG:4326). Returns `null` when the code is not registered in
- * proj4 or on projection failure. Wraps {@link boundsFromProjection}. */
+ * proj4 or on projection failure. Wraps {@link boundsFromProjection}.
+ *
+ * Handles the anti-meridian wrapping artifact that occurs for CRS zones whose
+ * western or eastern edge crosses ±180° (e.g. UTM zone 1: easting=0 projects
+ * to ~178°E instead of ~180°W). When the raw bounds span > 180°, the function
+ * re-projects just the W/E mid-latitude edges and normalises them relative to
+ * the dataset centre longitude to recover a correct narrow span. */
 export function boundsFromEpsgCode(
   transform: readonly number[],
   shape: readonly number[],
@@ -121,7 +127,30 @@ export function boundsFromEpsgCode(
     const converter = proj4(projCode, "EPSG:4326");
     const project = (x: number, y: number): [number, number] =>
       converter.forward([x, y], false) as [number, number];
-    return boundsFromProjection(transform, shape, project);
+    const result = boundsFromProjection(transform, shape, project);
+    if (!result) return null;
+    const [w, s, e, n] = result;
+    if (e - w <= 180) return result;
+    // Anti-meridian wrapping: one edge projected past ±180°. Re-project the
+    // western and eastern mid-latitude edges and normalise relative to the
+    // centre longitude to obtain the correct narrow span.
+    const c = corners(transform, shape);
+    if (!c) return result;
+    const midY = (c.minY + c.maxY) / 2;
+    const [cLng] = project((c.minX + c.maxX) / 2, midY);
+    if (!Number.isFinite(cLng)) return result;
+    const norm = (lng: number): number => {
+      let l = lng;
+      while (l - cLng > 180) l -= 360;
+      while (cLng - l > 180) l += 360;
+      return l;
+    };
+    const [wLng] = project(c.minX, midY);
+    const [eLng] = project(c.maxX, midY);
+    if (!Number.isFinite(wLng) || !Number.isFinite(eLng)) return result;
+    const corrW = Math.max(-180, norm(wLng));
+    const corrE = Math.min(180, norm(eLng));
+    return [Math.min(corrW, corrE), s, Math.max(corrW, corrE), n];
   } catch {
     return null;
   }

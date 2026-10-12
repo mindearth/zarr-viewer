@@ -115,12 +115,14 @@ describe("boundsFromEpsgCode (proj4 built-in EPSG definitions)", () => {
     const [w, s, e, n] = b!;
     expect([w, s, e, n].every(Number.isFinite)).toBe(true);
     expect(s).toBeLessThan(n);
-    // UTM zone 1 straddles the anti-meridian (180°W = 180°E). The western
-    // extent (easting ≈ 0 m) maps to ~178°E (positive longitude) in the
-    // [-180, 180] range, so transformBounds produces a wide span: w ≈ -177,
-    // e ≈ 179. The bounds are finite and cover most of the globe.
-    expect(w).toBeGreaterThan(-180);
-    expect(e).toBeGreaterThan(170); // wraps to near +180
+    // UTM zone 1 straddles the anti-meridian. The anti-meridian correction
+    // re-projects the W/E mid-latitude edges and normalises them relative to
+    // the centre (~-177°W): western edge (easting=0) normalises from ~178°E
+    // to ~-182° → clamped to -180; eastern edge (easting≈983040 m) stays at
+    // ~-172°. The corrected bounds should cover only the zone-1 strip.
+    expect(w).toBeCloseTo(-180, 0);
+    expect(e).toBeGreaterThan(-175);
+    expect(e).toBeLessThan(-170); // eastern edge of UTM zone 1 (~-172°W)
     // North/south extent covers most of the globe for this dataset.
     expect(s).toBeLessThan(-70);
     expect(n).toBeGreaterThan(70);
