@@ -1232,7 +1232,7 @@ function serializeDims(dimIndices: Record<string, number>): string {
  * every frame of all of them). Computed identically in `buildLayer` (cache /
  * sample-tile key) and `sampleValue` (read) so they always agree. Equals the
  * texture path's `chunkKey`, so changing a memory dim is a cache hit. */
-function sampleKeyFor(
+export function sampleKeyFor(
   state: ScalarGridState,
   variable: ScalarGridVariable,
 ): string {

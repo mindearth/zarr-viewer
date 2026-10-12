@@ -1,5 +1,6 @@
 import type * as zarr from "zarrita";
 import type { ProfileBaseContext } from "../../profile";
+import type { CrsConverters } from "../../crs";
 import type { LngLatBounds } from "../../data-bounds";
 
 /** A non-spatial (leading) dimension of a variable — gets a slider. */
@@ -88,6 +89,8 @@ export type ScalarGridContext = ProfileBaseContext & {
   /** Per-dim label formatter (`idx → string`), decoded from each coord
    * array's CF `units`/`calendar` (dates / durations / index fallback). */
   dimLabel: Record<string, (idx: number) => string>;
+  /** Resolved CRS converters for projected grids; undefined for geographic grids. */
+  crs?: CrsConverters | null;
 };
 
 export type ScalarGridState = {
