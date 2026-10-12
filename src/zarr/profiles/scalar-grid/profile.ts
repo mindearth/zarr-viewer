@@ -1163,52 +1163,58 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
         kind: "array",
       }));
     if (signal.aborted) return null;
-    // Sample a central patch sized to the spatial chunk — for coarse grids
-    // that's the whole plane (one chunk); for high-res sharded grids (FTW) it
-    // bounds the read to ~one shard instead of the entire world. A texture-array
-    // dim is sliced in full so the rescale stays stable across frames.
+    // Sample a patch sized to the spatial chunk — for coarse grids that's the
+    // whole plane; for high-res sharded grids it bounds the read to ~one shard.
+    // A texture-array dim is sliced in full so rescale stays stable across frames.
     const nd = arr.shape.length;
     const latSize = arr.shape[nd - 2] ?? 0;
     const lonSize = arr.shape[nd - 1] ?? 0;
     const patchH = Math.min(arr.chunks[nd - 2] ?? latSize, latSize);
     const patchW = Math.min(arr.chunks[nd - 1] ?? lonSize, lonSize);
-    const latStart = Math.max(0, Math.floor((latSize - patchH) / 2));
-    const lonStart = Math.max(0, Math.floor((lonSize - patchW) / 2));
-    const sliceSpec: (number | zarr.Slice | null)[] = [
-      ...variableMeta.dims.map((d) =>
-        d.name === variableMeta.textureDim?.name
-          ? null
-          : (state.dimIndices[d.name] ?? 0),
-      ),
-      zarr.slice(latStart, latStart + patchH),
-      zarr.slice(lonStart, lonStart + patchW),
-    ];
-    const chunk = await zarr.get(
-      arr as zarr.Array<zarr.NumberDataType, zarr.Readable>,
-      sliceSpec,
-      { signal },
-    );
-    if (signal.aborted) return null;
     const fill =
       variableMeta.fillValue !== null &&
       Number.isFinite(variableMeta.fillValue) &&
       variableMeta.fillValue !== 0
         ? variableMeta.fillValue
         : null;
-    // CF-decode to physical units so the auto rescale matches the rendered
-    // (decoded) texture; fill → NaN, which buildBandStats skips.
-    const raw = chunk.data as ArrayLike<number>;
-    const decoded = new Float32Array(raw.length);
-    for (let i = 0; i < raw.length; i++) {
-      const v = Number(raw[i]);
-      decoded[i] =
-        fill !== null && v === fill
-          ? Number.NaN
-          : v * variableMeta.scaleFactor + variableMeta.addOffset;
+    const dimSlices = variableMeta.dims.map((d) =>
+      d.name === variableMeta.textureDim?.name
+        ? null
+        : (state.dimIndices[d.name] ?? 0),
+    );
+    // Try a few positions: centre first (works for most stores), then
+    // upper-right / upper-left as fallbacks for land-only datasets (e.g.
+    // OlmoEarth) whose centre patch falls in an ocean-only region.
+    const candidates: [number, number][] = [[0.5, 0.5], [0.2, 0.8], [0.2, 0.2]];
+    for (const [latFrac, lonFrac] of candidates) {
+      if (signal.aborted) return null;
+      const latStart = Math.max(0, Math.floor((latSize - patchH) * latFrac));
+      const lonStart = Math.max(0, Math.floor((lonSize - patchW) * lonFrac));
+      const sliceSpec: (number | zarr.Slice | null)[] = [
+        ...dimSlices,
+        zarr.slice(latStart, latStart + patchH),
+        zarr.slice(lonStart, lonStart + patchW),
+      ];
+      const chunk = await zarr.get(
+        arr as zarr.Array<zarr.NumberDataType, zarr.Readable>,
+        sliceSpec,
+        { signal },
+      );
+      if (signal.aborted) return null;
+      // CF-decode to physical units; fill → NaN, which buildBandStats skips.
+      const raw = chunk.data as ArrayLike<number>;
+      const decoded = new Float32Array(raw.length);
+      for (let i = 0; i < raw.length; i++) {
+        const v = Number(raw[i]);
+        decoded[i] =
+          fill !== null && v === fill
+            ? Number.NaN
+            : v * variableMeta.scaleFactor + variableMeta.addOffset;
+      }
+      const stats = buildBandStats(decoded, null);
+      if (stats) return autoStatsFromGlobal(stats);
     }
-    const stats = buildBandStats(decoded, null);
-    if (!stats) return null;
-    return autoStatsFromGlobal(stats);
+    return null;
   },
 };
 
