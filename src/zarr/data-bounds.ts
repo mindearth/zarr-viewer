@@ -110,11 +110,15 @@ export function boundsFromProjection(
  * geographic EPSG:4326). Returns `null` when the code is not registered in
  * proj4 or on projection failure. Wraps {@link boundsFromProjection}.
  *
- * Handles the anti-meridian wrapping artifact that occurs for CRS zones whose
- * western or eastern edge crosses ±180° (e.g. UTM zone 1: easting=0 projects
- * to ~178°E instead of ~180°W). When the raw bounds span > 180°, the function
- * re-projects just the W/E mid-latitude edges and normalises them relative to
- * the dataset centre longitude to recover a correct narrow span. */
+ * Uses mid-latitude projections for W/E bounds rather than the raw corner
+ * projections. UTM arrays can extend far beyond the projection's valid
+ * northing range (e.g. OlmoEarth spans ±9000 km), causing proj4 to extrapolate
+ * and produce wildly distorted longitudes at extreme northings. Projecting only
+ * the western and eastern edges at mid-latitude avoids that distortion and
+ * also handles anti-meridian wrapping (e.g. UTM zone 1: easting=0 maps to
+ * ~178°E, normalised relative to the centre longitude to ~-180°). N/S bounds
+ * come from the densified full-extent projection where latitude distortion at
+ * the extremes is small and well-behaved. */
 export function boundsFromEpsgCode(
   transform: readonly number[],
   shape: readonly number[],
@@ -127,18 +131,19 @@ export function boundsFromEpsgCode(
     const converter = proj4(projCode, "EPSG:4326");
     const project = (x: number, y: number): [number, number] =>
       converter.forward([x, y], false) as [number, number];
-    const result = boundsFromProjection(transform, shape, project);
-    if (!result) return null;
-    const [w, s, e, n] = result;
-    if (e - w <= 180) return result;
-    // Anti-meridian wrapping: one edge projected past ±180°. Re-project the
-    // western and eastern mid-latitude edges and normalise relative to the
-    // centre longitude to obtain the correct narrow span.
+
+    // N/S: use the densified full-extent projection (accurate for curved edges).
+    const densified = boundsFromProjection(transform, shape, project);
+    if (!densified) return null;
+    const [, s, , n] = densified;
+
+    // W/E: project only the western and eastern array edges at mid-latitude,
+    // normalising relative to the centre longitude to handle anti-meridian.
     const c = corners(transform, shape);
-    if (!c) return result;
+    if (!c) return null;
     const midY = (c.minY + c.maxY) / 2;
     const [cLng] = project((c.minX + c.maxX) / 2, midY);
-    if (!Number.isFinite(cLng)) return result;
+    if (!Number.isFinite(cLng)) return null;
     const norm = (lng: number): number => {
       let l = lng;
       while (l - cLng > 180) l -= 360;
@@ -147,7 +152,7 @@ export function boundsFromEpsgCode(
     };
     const [wLng] = project(c.minX, midY);
     const [eLng] = project(c.maxX, midY);
-    if (!Number.isFinite(wLng) || !Number.isFinite(eLng)) return result;
+    if (!Number.isFinite(wLng) || !Number.isFinite(eLng)) return null;
     const corrW = Math.max(-180, norm(wLng));
     const corrE = Math.min(180, norm(eLng));
     return [Math.min(corrW, corrE), s, Math.max(corrW, corrE), n];

@@ -128,6 +128,25 @@ describe("boundsFromEpsgCode (proj4 built-in EPSG definitions)", () => {
     expect(n).toBeGreaterThan(70);
   });
 
+  it("EPSG:32610 (UTM zone 10 north) reprojects to a ~8-degree-wide bbox, not 90°", () => {
+    // Same OlmoEarth transform/shape as utm01 but for zone 10 (covers California).
+    // Extreme northing range used by OlmoEarth caused ~90° wide boxes with the
+    // old corner-projection approach; mid-latitude projection should give ~8°.
+    const transform = [10, 0, 0, 0, -10, 9502720];
+    const shape = [1867776, 98304];
+    const b = boundsFromEpsgCode(transform, shape, "EPSG:32610");
+    expect(b).not.toBeNull();
+    const [w, s, e, n] = b!;
+    expect([w, s, e, n].every(Number.isFinite)).toBe(true);
+    expect(s).toBeLessThan(n);
+    // UTM zone 10 central meridian is -123°; the array (~983 km wide) spans
+    // roughly -127.5° to -118.7°, well under 20° and nowhere near 90°.
+    expect(e - w).toBeLessThan(20);
+    expect(w).toBeLessThan(-120);
+    expect(e).toBeGreaterThan(-130);
+    expect(e).toBeLessThan(-110);
+  });
+
   it("returns null for an EPSG code not in proj4's built-in registry", () => {
     const transform = [10, 0, 0, 0, -10, 100];
     const shape = [10, 10];
