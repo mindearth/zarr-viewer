@@ -77,6 +77,24 @@ function joinPath(group: string, leaf: string): string {
   return group ? `${group}/${leaf}` : leaf;
 }
 
+/** HEAD-probe the first chunk of a zarr v3 array at `url`. Returns false only
+ * on an explicit 404 — any other result (2xx, network error, CORS) is treated
+ * as "data present" so we never silently hide a variable that might have data. */
+async function probeFirstChunkExists(
+  url: string,
+  varName: string,
+  ndim: number,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const zeros = Array<number>(ndim).fill(0).join("/");
+  try {
+    const res = await fetch(`${url}/${varName}/c/${zeros}`, { method: "HEAD", signal });
+    return res.status !== 404;
+  } catch {
+    return true;
+  }
+}
+
 export function spatialPair(
   dims: readonly (string | null)[] | undefined,
 ): { lat: string; lon: string } | null {
@@ -834,6 +852,26 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
           ? boundsFromEpsgCode(transform, shape, projCode)
           : null,
       );
+    }
+
+    // For multi-variable HTTP stores, probe each variable's first chunk to
+    // confirm data was actually uploaded. Variables that return 404 have their
+    // bounds cleared so the overlay only shows zones with real data.
+    if (variables.length > 1 && /^https?:/i.test(url) && !signal.aborted) {
+      const probes = await Promise.all(
+        variables.map(async (v) => {
+          if (!variableBounds.get(v.name)) return [v.name, true] as const;
+          const arr = arrays.get(v.name)!;
+          const exists = await probeFirstChunkExists(url, v.name, arr.shape.length, signal);
+          return [v.name, exists] as const;
+        }),
+      );
+      for (const [name, exists] of probes) {
+        if (!exists) {
+          variableBounds.set(name, null);
+          log.info(`probe: no data for "${name}" (first chunk 404)`);
+        }
+      }
     }
 
     done();
