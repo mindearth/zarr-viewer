@@ -1,4 +1,5 @@
 import { ZarrLayer } from "@developmentseed/deck.gl-zarr";
+import proj4 from "proj4";
 import * as zarr from "zarrita";
 import {
   autoStatsFromGlobal,
@@ -1122,25 +1123,42 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
   sampleValue(ctx, state, lng, lat) {
     const variableMeta = ctx.variables.find((v) => v.name === state.variable);
     if (!variableMeta) return null;
-    const attrs = ctx.spatialAttrs as ScalarGridSpatialAttrs;
-    const t = attrs?.["spatial:transform"];
-    const shape = attrs?.["spatial:shape"];
+    // Per-variable attrs (multi-UTM-zone stores) take precedence over the shared
+    // root attrs, mirroring the dataBounds / nativeResolution pattern.
+    const attrs = (
+      ctx.variableSpatialAttrs.get(state.variable) ?? ctx.spatialAttrs
+    ) as Record<string, unknown> | undefined;
+    if (!attrs) return null;
+    const t = attrs["spatial:transform"] as number[] | undefined;
+    const shape = attrs["spatial:shape"] as number[] | undefined;
     if (!Array.isArray(t) || !Array.isArray(shape)) return null;
-    const [stepLon, , originLon, , stepLat, originLat] = t;
+    const [stepX, , originX, , stepY, originY] = t;
     const [height, width] = shape;
-    if (!stepLon || !stepLat) return null;
-    // Invert the affine. Both render paths read in the same -180..180 logical
-    // frame (the texture-array tile re-rolls internally), so one inversion
-    // serves both. Wrap lng into [-180, 180) so hovering a repeated world copy
-    // (maplibre renders several) still resolves on global grids.
-    //
+    if (!stepX || !stepY) return null;
+
+    const projCode = attrs["proj:code"];
+    let sx: number;
+    let sy: number;
+    if (typeof projCode === "string" && !/4326|4269|4258/.test(projCode)) {
+      // Projected CRS: reproject the cursor into the grid's native coordinates.
+      try {
+        [sx, sy] = proj4(projCode, "EPSG:4326").inverse([lng, lat], false) as [number, number];
+      } catch {
+        return null;
+      }
+    } else {
+      // Geographic CRS: wrap lng into [-180, 180) for global grids, matching
+      // the tile re-roll in the render path.
+      sx = ((((lng + 180) % 360) + 360) % 360) - 180;
+      sy = lat;
+    }
+
     // `floor`, not `round`: deck places the affine origin at the pixel *corner*
     // (it spans array index [0, W]×[0, H], so texel i covers index [i, i+1)).
     // Flooring the fractional index picks the texel actually drawn under the
     // cursor; rounding would snap to cell centers — a half-cell offset.
-    const wrappedLng = ((((lng + 180) % 360) + 360) % 360) - 180;
-    const col = Math.floor((wrappedLng - originLon) / stepLon);
-    const row = Math.floor((lat - originLat) / stepLat);
+    const col = Math.floor((sx - originX) / stepX);
+    const row = Math.floor((sy - originY) / stepY);
     if (row < 0 || row >= height || col < 0 || col >= width) return null;
     const frame = variableMeta.textureDim
       ? (state.dimIndices[variableMeta.textureDim.name] ?? 0)
@@ -1151,6 +1169,9 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
       label: variableMeta.longName ?? variableMeta.name,
       value: Number.isNaN(value) ? null : value,
       units: variableMeta.units,
+      ...(typeof projCode === "string" && !/4326|4269|4258/.test(projCode)
+        ? { projectedX: sx, projectedY: sy }
+        : {}),
     };
   },
 
