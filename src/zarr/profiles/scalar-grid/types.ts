@@ -66,6 +66,11 @@ export type ScalarGridContext = ProfileBaseContext & {
   /** Grid attrs passed to `ZarrLayer.metadata` — the store's own GeoZarr
    * attrs when present, else synthesized from the lat/lon coord arrays. */
   spatialAttrs: ScalarGridSpatialAttrs | unknown;
+  /** Per-variable override of {@link spatialAttrs}, keyed by variable name.
+   * Populated for stores where each child group carries its own
+   * `spatial:transform`/`proj:code` (e.g. multi-UTM-zone stores). Empty for
+   * root-native and synthesized stores; consumers fall back to `spatialAttrs`. */
+  variableSpatialAttrs: Map<string, unknown>;
   /** Where {@link spatialAttrs} came from (drives the Structure panel). */
   metadataSource: "store-native" | "synthesized";
   /** True when the store's longitude runs 0..360 (e.g. GFS). The synthesized

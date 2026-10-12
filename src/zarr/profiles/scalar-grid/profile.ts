@@ -644,6 +644,7 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
         variables: [],
         arrays,
         spatialAttrs: {},
+        variableSpatialAttrs: new Map(),
         metadataSource: "synthesized" as const,
         rollLongitude: false,
         minRenderZoom: 0,
@@ -672,16 +673,33 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
       if (projected) throw new ProjectedGridStoreError();
     }
 
-    // Grid: prefer the store's own GeoZarr attrs (e.g. FTW/AEF); else
-    // synthesize from the lat/lon coord arrays (e.g. ECMWF/icechunk grids).
-    const native = readStoreNativeGrid(opened.group.attrs);
+    // Grid: prefer the store's own GeoZarr attrs (e.g. FTW/AEF); fall back to
+    // the variable's parent group (e.g. per-UTM-zone stores like OlmoEarth);
+    // else synthesize from the lat/lon coord arrays (e.g. ECMWF/icechunk grids).
+    let nativeGroupAttrs: unknown = opened.group.attrs;
+    let native = readStoreNativeGrid(opened.group.attrs);
+    if (!native && first.group) {
+      try {
+        const parentGroup = await zarr.open(
+          opened.group.resolve(first.group),
+          { kind: "group" },
+        );
+        const parentNative = readStoreNativeGrid(parentGroup.attrs);
+        if (parentNative) {
+          nativeGroupAttrs = parentGroup.attrs;
+          native = parentNative;
+        }
+      } catch {
+        // child group not openable — fall through to synthesize
+      }
+    }
     let spatialAttrs: unknown;
     let rollLongitude = false;
     let metadataSource: "store-native" | "synthesized";
     let degPerPxLon: number;
     let projCode: string;
     if (native) {
-      spatialAttrs = opened.group.attrs;
+      spatialAttrs = nativeGroupAttrs;
       metadataSource = "store-native";
       degPerPxLon = Math.abs(native.transform[0]!);
       projCode = native.projCode;
@@ -773,6 +791,36 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
       );
     }
 
+    // Per-variable spatial attrs for stores where each child group carries its
+    // own projection (e.g. OlmoEarth with 31 UTM zones). Only populated when
+    // native attrs came from a child group; root-native and synthesized stores
+    // use a single shared spatialAttrs. Groups are deduplicated so each unique
+    // parent path is only opened once (consolidated stores use cached metadata).
+    const variableSpatialAttrs = new Map<string, unknown>();
+    if (metadataSource === "store-native" && nativeGroupAttrs !== opened.group.attrs) {
+      const groupAttrsByPath = new Map<string, unknown>([
+        [first.group, nativeGroupAttrs],
+      ]);
+      for (const v of variables) {
+        if (!v.group) continue;
+        if (!groupAttrsByPath.has(v.group)) {
+          try {
+            const g = await zarr.open(
+              opened.group.resolve(v.group),
+              { kind: "group" },
+            );
+            groupAttrsByPath.set(v.group, g.attrs);
+          } catch {
+            continue;
+          }
+        }
+        const gAttrs = groupAttrsByPath.get(v.group);
+        if (gAttrs && readStoreNativeGrid(gAttrs)) {
+          variableSpatialAttrs.set(v.name, gAttrs);
+        }
+      }
+    }
+
     done();
     return {
       url,
@@ -781,6 +829,7 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
       variables,
       arrays,
       spatialAttrs,
+      variableSpatialAttrs,
       metadataSource,
       rollLongitude,
       minRenderZoom,
@@ -931,7 +980,7 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
     const common = {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       node: arr as any,
-      metadata: ctx.spatialAttrs,
+      metadata: ctx.variableSpatialAttrs.get(state.variable) ?? ctx.spatialAttrs,
       selection,
       tileSize: spatialTileSize(arr),
       minZoom: chassisState.minZoomOverride ?? ctx.minRenderZoom,

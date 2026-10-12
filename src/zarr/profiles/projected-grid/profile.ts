@@ -146,6 +146,7 @@ export const projectedGridProfile: ZarrProfile<
       variables,
       arrays,
       spatialAttrs,
+      variableSpatialAttrs: new Map(),
       metadataSource: "store-native",
       rollLongitude: false,
       minRenderZoom,
