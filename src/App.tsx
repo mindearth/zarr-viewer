@@ -659,9 +659,11 @@ export default function App() {
     for (const [variable, bounds] of vb) {
       if (!bounds) continue;
       const [w, s, e, n] = bounds;
+      // Close the rectangle manually (repeat first vertex) since PathLayer
+      // doesn't have a `loop` prop in deck.gl 9.x.
       data.push({
         variable,
-        path: [[w, s], [e, s], [e, n], [w, n]],
+        path: [[w, s], [e, s], [e, n], [w, n], [w, s]],
         selected: variable === selectedVar,
       });
     }
@@ -673,7 +675,6 @@ export default function App() {
       getColor: (d) => (d.selected ? [255, 220, 0, 230] : [200, 200, 200, 100]),
       getWidth: (d) => (d.selected ? 2 : 1),
       widthUnits: "pixels",
-      loop: true,
       pickable: false,
     });
   }, [profileCtx, profileState]);
