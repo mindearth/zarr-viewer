@@ -105,6 +105,62 @@ export function boundsFromProjection(
   }
 }
 
+/** Affine in a known EPSG-code CRS + its code → lng/lat bbox, using proj4's
+ * built-in definitions (covers all WGS84 UTM zones: EPSG:326XX/327XX, and
+ * geographic EPSG:4326). Returns `null` when the code is not registered in
+ * proj4 or on projection failure. Wraps {@link boundsFromProjection}.
+ *
+ * Uses mid-latitude projections for W/E bounds rather than the raw corner
+ * projections. UTM arrays can extend far beyond the projection's valid
+ * northing range (e.g. OlmoEarth spans ±9000 km), causing proj4 to extrapolate
+ * and produce wildly distorted longitudes at extreme northings. Projecting only
+ * the western and eastern edges at mid-latitude avoids that distortion and
+ * also handles anti-meridian wrapping (e.g. UTM zone 1: easting=0 maps to
+ * ~178°E, normalised relative to the centre longitude to ~-180°). N/S bounds
+ * come from the densified full-extent projection where latitude distortion at
+ * the extremes is small and well-behaved. */
+export function boundsFromEpsgCode(
+  transform: readonly number[],
+  shape: readonly number[],
+  projCode: string,
+): LngLatBounds | null {
+  if (projCode === "EPSG:4326") {
+    return geographicBounds(transform, shape);
+  }
+  try {
+    const converter = proj4(projCode, "EPSG:4326");
+    const project = (x: number, y: number): [number, number] =>
+      converter.forward([x, y], false) as [number, number];
+
+    // N/S: use the densified full-extent projection (accurate for curved edges).
+    const densified = boundsFromProjection(transform, shape, project);
+    if (!densified) return null;
+    const [, s, , n] = densified;
+
+    // W/E: project only the western and eastern array edges at mid-latitude,
+    // normalising relative to the centre longitude to handle anti-meridian.
+    const c = corners(transform, shape);
+    if (!c) return null;
+    const midY = (c.minY + c.maxY) / 2;
+    const [cLng] = project((c.minX + c.maxX) / 2, midY);
+    if (!Number.isFinite(cLng)) return null;
+    const norm = (lng: number): number => {
+      let l = lng;
+      while (l - cLng > 180) l -= 360;
+      while (cLng - l > 180) l += 360;
+      return l;
+    };
+    const [wLng] = project(c.minX, midY);
+    const [eLng] = project(c.maxX, midY);
+    if (!Number.isFinite(wLng) || !Number.isFinite(eLng)) return null;
+    const corrW = Math.max(-180, norm(wLng));
+    const corrE = Math.min(180, norm(eLng));
+    return [Math.min(corrW, corrE), s, Math.max(corrW, corrE), n];
+  } catch {
+    return null;
+  }
+}
+
 /** Affine in a projected CRS (metres) + its WKT2 → lng/lat bbox, via the same
  * proj4/`parseWkt` path the render layer uses. Returns `null` on any parse
  * failure. Thin wrapper over {@link boundsFromProjection}. */

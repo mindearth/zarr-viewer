@@ -17,11 +17,14 @@ import { bytesPerElement } from "../../chunk-size";
 import { assertCodecsSupported } from "../../unsupported-codec";
 import { openV3Group } from "../../load-zarr";
 import { geoTransformToSpatial, readProjectedSpatialRef } from "../../projected";
+import { resolveCrsConverters } from "../../crs";
 import { createLogger } from "../../../log";
+import { readSampleValue } from "../../../render/sample-source";
 import { buildDimLabel } from "../scalar-grid/cf-coords";
 import {
   deriveMinZoom,
   enumerateVariables,
+  sampleKeyFor,
   scalarGridProfile,
   shardSpatialShape,
 } from "../scalar-grid/profile";
@@ -133,6 +136,8 @@ export const projectedGridProfile: ZarrProfile<
       );
     }
 
+    const crs = await resolveCrsConverters({ wkt2: projected.crsWkt });
+
     log.info(
       `prepared projected "${first.name}" ${firstArr.dtype} ` +
         `[${firstArr.shape.join(",")}] ${projected.gridMappingName ?? "wkt"}, ` +
@@ -146,18 +151,44 @@ export const projectedGridProfile: ZarrProfile<
       variables,
       arrays,
       spatialAttrs,
+      variableSpatialAttrs: new Map(),
+      variableBounds: new Map(),
       metadataSource: "store-native",
       rollLongitude: false,
       minRenderZoom,
       dimLabel,
+      crs,
     };
   },
 
-  // The reused scalar-grid `sampleValue` inverts a geographic (lat/lon) affine,
-  // which doesn't hold for a projected CRS — disable the hover readout rather
-  // than report values from the wrong location. (A future version could proj4
-  // the cursor lng/lat into the projected grid.)
-  sampleValue: () => null,
+  sampleValue(ctx, state, lng, lat) {
+    if (!ctx.crs) return null;
+    const variableMeta = ctx.variables.find((v) => v.name === state.variable);
+    if (!variableMeta) return null;
+    const attrs = ctx.spatialAttrs as { "spatial:transform"?: number[]; "spatial:shape"?: number[] };
+    const t = attrs?.["spatial:transform"];
+    const shape = attrs?.["spatial:shape"];
+    if (!Array.isArray(t) || !Array.isArray(shape)) return null;
+    const [stepX, , originX, , stepY, originY] = t;
+    const [height, width] = shape;
+    if (!stepX || !stepY) return null;
+    const [sx, sy] = ctx.crs.fromLngLat(lng, lat);
+    const col = Math.floor((sx - originX) / stepX);
+    const row = Math.floor((sy - originY) / stepY);
+    if (row < 0 || row >= height || col < 0 || col >= width) return null;
+    const frame = variableMeta.textureDim
+      ? (state.dimIndices[variableMeta.textureDim.name] ?? 0)
+      : 0;
+    const value = readSampleValue(sampleKeyFor(state, variableMeta), row, col, frame);
+    if (value === null) return null;
+    return {
+      label: variableMeta.longName ?? variableMeta.name,
+      value: Number.isNaN(value) ? null : value,
+      units: variableMeta.units,
+      projectedX: sx,
+      projectedY: sy,
+    };
+  },
 
   // Reproject the projected (metre) extent to a lng/lat bbox for the intro
   // fly-in — overrides scalar-grid's geographic version.

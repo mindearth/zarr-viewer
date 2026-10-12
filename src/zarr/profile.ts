@@ -141,7 +141,7 @@ export type ZarrProfile<
     state: S,
     lng: number,
     lat: number,
-  ) => { label: string; value: number | null; units: string | null } | null;
+  ) => { label: string; value: number | null; units: string | null; projectedX?: number; projectedY?: number } | null;
   /** Whether this profile uses single-band + colormap rendering (and so
    * needs the colormap sprite uploaded before layer construction). */
   needsColormap: boolean;

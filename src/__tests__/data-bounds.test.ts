@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  boundsFromEpsgCode,
   boundsFromProjection,
   geographicBounds,
   mercatorBounds,
@@ -92,5 +93,67 @@ describe("boundsFromProjection (explicit projection fn)", () => {
       throw new Error("nope");
     };
     expect(boundsFromProjection([1, 0, 0, 0, -1, 10], [10, 10], boom)).toBeNull();
+  });
+});
+
+describe("boundsFromEpsgCode (proj4 built-in EPSG definitions)", () => {
+  it("EPSG:4326 matches geographicBounds (no network, direct shortcut)", () => {
+    const transform = [0.25, 0, -10, 0, -0.25, 50];
+    const shape = [200, 400];
+    expect(boundsFromEpsgCode(transform, shape, "EPSG:4326")).toEqual(
+      geographicBounds(transform, shape),
+    );
+  });
+
+  it("EPSG:32601 (UTM zone 1 north) reprojects to a plausible lng/lat bbox", () => {
+    // utm01 extent from OlmoEarth: [0, -9175040, 983040, 9502720] in UTM metres.
+    // Affine: step=10 m/px, origin (0, 9502720), shape [1867776, 98304].
+    const transform = [10, 0, 0, 0, -10, 9502720];
+    const shape = [1867776, 98304];
+    const b = boundsFromEpsgCode(transform, shape, "EPSG:32601");
+    expect(b).not.toBeNull();
+    const [w, s, e, n] = b!;
+    expect([w, s, e, n].every(Number.isFinite)).toBe(true);
+    expect(s).toBeLessThan(n);
+    // UTM zone 1 straddles the anti-meridian. The anti-meridian correction
+    // re-projects the W/E mid-latitude edges and normalises them relative to
+    // the centre (~-177°W): western edge (easting=0) normalises from ~178°E
+    // to ~-182° → clamped to -180; eastern edge (easting≈983040 m) stays at
+    // ~-172°. The corrected bounds should cover only the zone-1 strip.
+    expect(w).toBeCloseTo(-180, 0);
+    expect(e).toBeGreaterThan(-175);
+    expect(e).toBeLessThan(-170); // eastern edge of UTM zone 1 (~-172°W)
+    // North/south extent covers most of the globe for this dataset.
+    expect(s).toBeLessThan(-70);
+    expect(n).toBeGreaterThan(70);
+  });
+
+  it("EPSG:32610 (UTM zone 10 north) reprojects to a ~8-degree-wide bbox, not 90°", () => {
+    // Same OlmoEarth transform/shape as utm01 but for zone 10 (covers California).
+    // Extreme northing range used by OlmoEarth caused ~90° wide boxes with the
+    // old corner-projection approach; mid-latitude projection should give ~8°.
+    const transform = [10, 0, 0, 0, -10, 9502720];
+    const shape = [1867776, 98304];
+    const b = boundsFromEpsgCode(transform, shape, "EPSG:32610");
+    expect(b).not.toBeNull();
+    const [w, s, e, n] = b!;
+    expect([w, s, e, n].every(Number.isFinite)).toBe(true);
+    expect(s).toBeLessThan(n);
+    // UTM zone 10 central meridian is -123°; the array (~983 km wide) spans
+    // roughly -127.5° to -118.7°, well under 20° and nowhere near 90°.
+    expect(e - w).toBeLessThan(20);
+    expect(w).toBeLessThan(-120);
+    expect(e).toBeGreaterThan(-130);
+    expect(e).toBeLessThan(-110);
+  });
+
+  it("returns null for an EPSG code not in proj4's built-in registry", () => {
+    const transform = [10, 0, 0, 0, -10, 100];
+    const shape = [10, 10];
+    expect(boundsFromEpsgCode(transform, shape, "EPSG:99999")).toBeNull();
+  });
+
+  it("returns null on a malformed transform", () => {
+    expect(boundsFromEpsgCode([10, 0], [10, 10], "EPSG:32601")).toBeNull();
   });
 });

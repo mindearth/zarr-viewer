@@ -1,4 +1,5 @@
 import { ZarrLayer } from "@developmentseed/deck.gl-zarr";
+import proj4 from "proj4";
 import * as zarr from "zarrita";
 import {
   autoStatsFromGlobal,
@@ -27,7 +28,7 @@ import { OmeZarrStoreError, isOmeZarrAttrs } from "../image-orthographic/ome";
 
 const log = createLogger("profile");
 import type { ZarrProfile } from "../../profile";
-import { geographicBounds } from "../../data-bounds";
+import { boundsFromEpsgCode, type LngLatBounds } from "../../data-bounds";
 import { buildDimLabel } from "./cf-coords";
 import { ScalarGridControls } from "./controls";
 import { makeScalarGridTileLoader } from "./tile-loader";
@@ -644,6 +645,8 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
         variables: [],
         arrays,
         spatialAttrs: {},
+        variableSpatialAttrs: new Map(),
+        variableBounds: new Map(),
         metadataSource: "synthesized" as const,
         rollLongitude: false,
         minRenderZoom: 0,
@@ -672,16 +675,33 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
       if (projected) throw new ProjectedGridStoreError();
     }
 
-    // Grid: prefer the store's own GeoZarr attrs (e.g. FTW/AEF); else
-    // synthesize from the lat/lon coord arrays (e.g. ECMWF/icechunk grids).
-    const native = readStoreNativeGrid(opened.group.attrs);
+    // Grid: prefer the store's own GeoZarr attrs (e.g. FTW/AEF); fall back to
+    // the variable's parent group (e.g. per-UTM-zone stores like OlmoEarth);
+    // else synthesize from the lat/lon coord arrays (e.g. ECMWF/icechunk grids).
+    let nativeGroupAttrs: unknown = opened.group.attrs;
+    let native = readStoreNativeGrid(opened.group.attrs);
+    if (!native && first.group) {
+      try {
+        const parentGroup = await zarr.open(
+          opened.group.resolve(first.group),
+          { kind: "group" },
+        );
+        const parentNative = readStoreNativeGrid(parentGroup.attrs);
+        if (parentNative) {
+          nativeGroupAttrs = parentGroup.attrs;
+          native = parentNative;
+        }
+      } catch {
+        // child group not openable — fall through to synthesize
+      }
+    }
     let spatialAttrs: unknown;
     let rollLongitude = false;
     let metadataSource: "store-native" | "synthesized";
     let degPerPxLon: number;
     let projCode: string;
     if (native) {
-      spatialAttrs = opened.group.attrs;
+      spatialAttrs = nativeGroupAttrs;
       metadataSource = "store-native";
       degPerPxLon = Math.abs(native.transform[0]!);
       projCode = native.projCode;
@@ -773,6 +793,50 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
       );
     }
 
+    // Per-variable spatial attrs for stores where each child group carries its
+    // own projection (e.g. OlmoEarth with 31 UTM zones). Only populated when
+    // native attrs came from a child group; root-native and synthesized stores
+    // use a single shared spatialAttrs. Groups are deduplicated so each unique
+    // parent path is only opened once (consolidated stores use cached metadata).
+    const variableSpatialAttrs = new Map<string, unknown>();
+    if (metadataSource === "store-native" && nativeGroupAttrs !== opened.group.attrs) {
+      const groupAttrsByPath = new Map<string, unknown>([
+        [first.group, nativeGroupAttrs],
+      ]);
+      for (const v of variables) {
+        if (!v.group) continue;
+        if (!groupAttrsByPath.has(v.group)) {
+          try {
+            const g = await zarr.open(
+              opened.group.resolve(v.group),
+              { kind: "group" },
+            );
+            groupAttrsByPath.set(v.group, g.attrs);
+          } catch {
+            continue;
+          }
+        }
+        const gAttrs = groupAttrsByPath.get(v.group);
+        if (gAttrs && readStoreNativeGrid(gAttrs)) {
+          variableSpatialAttrs.set(v.name, gAttrs);
+        }
+      }
+    }
+
+    const variableBounds = new Map<string, LngLatBounds | null>();
+    for (const v of variables) {
+      const attrs = (variableSpatialAttrs.get(v.name) ?? spatialAttrs) as Record<string, unknown>;
+      const transform = attrs?.["spatial:transform"] as readonly number[] | undefined;
+      const shape = attrs?.["spatial:shape"] as readonly number[] | undefined;
+      const projCode = attrs?.["proj:code"];
+      variableBounds.set(
+        v.name,
+        transform && shape && typeof projCode === "string"
+          ? boundsFromEpsgCode(transform, shape, projCode)
+          : null,
+      );
+    }
+
     done();
     return {
       url,
@@ -781,6 +845,8 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
       variables,
       arrays,
       spatialAttrs,
+      variableSpatialAttrs,
+      variableBounds,
       metadataSource,
       rollLongitude,
       minRenderZoom,
@@ -821,20 +887,36 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
 
   initialBounds: () => [-180, -90, 180, 90],
 
-  // Geographic (lat/lon) data extent for the optional intro fly-in. Projected
-  // grids carry `proj:wkt2` instead of `proj:code` and override this.
-  dataBounds: (ctx) => {
-    const attrs = ctx.spatialAttrs as ScalarGridSpatialAttrs | undefined;
-    if (!attrs || attrs["proj:code"] !== "EPSG:4326") return null;
-    return geographicBounds(attrs["spatial:transform"], attrs["spatial:shape"]);
+  // Geographic (lat/lon) data extent for the optional intro fly-in. Uses the
+  // per-variable spatial attrs for multi-projection stores (e.g. multi-UTM-zone
+  // stores where each child group carries its own `proj:code`). Projected grids
+  // that carry `proj:wkt2` instead of `proj:code` override this method.
+  dataBounds: (ctx, state) => {
+    const attrs = (
+      ctx.variableSpatialAttrs.get(state.variable) ?? ctx.spatialAttrs
+    ) as Record<string, unknown> | undefined;
+    if (!attrs) return null;
+    const transform = attrs["spatial:transform"] as readonly number[] | undefined;
+    const shape = attrs["spatial:shape"] as readonly number[] | undefined;
+    const projCode = attrs["proj:code"];
+    if (!transform || !shape || typeof projCode !== "string") return null;
+    return boundsFromEpsgCode(transform, shape, projCode);
   },
 
-  // Native resolution (degrees/pixel) for the "zoom to your location" button.
-  nativeResolution: (ctx) => {
-    const attrs = ctx.spatialAttrs as ScalarGridSpatialAttrs | undefined;
-    if (!attrs || attrs["proj:code"] !== "EPSG:4326") return null;
-    const step = Math.abs(attrs["spatial:transform"]?.[0] ?? 0);
-    return step > 0 ? { kind: "degrees", value: step } : null;
+  // Native resolution for the "zoom to your location" button. Uses per-variable
+  // attrs and returns ground-meters for projected CRS (UTM, etc.).
+  nativeResolution: (ctx, state) => {
+    const attrs = (
+      ctx.variableSpatialAttrs.get(state.variable) ?? ctx.spatialAttrs
+    ) as Record<string, unknown> | undefined;
+    if (!attrs) return null;
+    const projCode = attrs["proj:code"];
+    const step = Math.abs(
+      (attrs["spatial:transform"] as readonly number[] | undefined)?.[0] ?? 0,
+    );
+    if (!(step > 0)) return null;
+    if (projCode === "EPSG:4326") return { kind: "degrees" as const, value: step };
+    return { kind: "ground-meters" as const, value: step };
   },
 
   Controls: ScalarGridControls,
@@ -931,7 +1013,7 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
     const common = {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       node: arr as any,
-      metadata: ctx.spatialAttrs,
+      metadata: ctx.variableSpatialAttrs.get(state.variable) ?? ctx.spatialAttrs,
       selection,
       tileSize: spatialTileSize(arr),
       minZoom: chassisState.minZoomOverride ?? ctx.minRenderZoom,
@@ -1041,25 +1123,42 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
   sampleValue(ctx, state, lng, lat) {
     const variableMeta = ctx.variables.find((v) => v.name === state.variable);
     if (!variableMeta) return null;
-    const attrs = ctx.spatialAttrs as ScalarGridSpatialAttrs;
-    const t = attrs?.["spatial:transform"];
-    const shape = attrs?.["spatial:shape"];
+    // Per-variable attrs (multi-UTM-zone stores) take precedence over the shared
+    // root attrs, mirroring the dataBounds / nativeResolution pattern.
+    const attrs = (
+      ctx.variableSpatialAttrs.get(state.variable) ?? ctx.spatialAttrs
+    ) as Record<string, unknown> | undefined;
+    if (!attrs) return null;
+    const t = attrs["spatial:transform"] as number[] | undefined;
+    const shape = attrs["spatial:shape"] as number[] | undefined;
     if (!Array.isArray(t) || !Array.isArray(shape)) return null;
-    const [stepLon, , originLon, , stepLat, originLat] = t;
+    const [stepX, , originX, , stepY, originY] = t;
     const [height, width] = shape;
-    if (!stepLon || !stepLat) return null;
-    // Invert the affine. Both render paths read in the same -180..180 logical
-    // frame (the texture-array tile re-rolls internally), so one inversion
-    // serves both. Wrap lng into [-180, 180) so hovering a repeated world copy
-    // (maplibre renders several) still resolves on global grids.
-    //
+    if (!stepX || !stepY) return null;
+
+    const projCode = attrs["proj:code"];
+    let sx: number;
+    let sy: number;
+    if (typeof projCode === "string" && !/4326|4269|4258/.test(projCode)) {
+      // Projected CRS: reproject the cursor into the grid's native coordinates.
+      try {
+        [sx, sy] = proj4(projCode, "EPSG:4326").inverse([lng, lat], false) as [number, number];
+      } catch {
+        return null;
+      }
+    } else {
+      // Geographic CRS: wrap lng into [-180, 180) for global grids, matching
+      // the tile re-roll in the render path.
+      sx = ((((lng + 180) % 360) + 360) % 360) - 180;
+      sy = lat;
+    }
+
     // `floor`, not `round`: deck places the affine origin at the pixel *corner*
     // (it spans array index [0, W]×[0, H], so texel i covers index [i, i+1)).
     // Flooring the fractional index picks the texel actually drawn under the
     // cursor; rounding would snap to cell centers — a half-cell offset.
-    const wrappedLng = ((((lng + 180) % 360) + 360) % 360) - 180;
-    const col = Math.floor((wrappedLng - originLon) / stepLon);
-    const row = Math.floor((lat - originLat) / stepLat);
+    const col = Math.floor((sx - originX) / stepX);
+    const row = Math.floor((sy - originY) / stepY);
     if (row < 0 || row >= height || col < 0 || col >= width) return null;
     const frame = variableMeta.textureDim
       ? (state.dimIndices[variableMeta.textureDim.name] ?? 0)
@@ -1070,6 +1169,9 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
       label: variableMeta.longName ?? variableMeta.name,
       value: Number.isNaN(value) ? null : value,
       units: variableMeta.units,
+      ...(typeof projCode === "string" && !/4326|4269|4258/.test(projCode)
+        ? { projectedX: sx, projectedY: sy }
+        : {}),
     };
   },
 
@@ -1082,52 +1184,58 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
         kind: "array",
       }));
     if (signal.aborted) return null;
-    // Sample a central patch sized to the spatial chunk — for coarse grids
-    // that's the whole plane (one chunk); for high-res sharded grids (FTW) it
-    // bounds the read to ~one shard instead of the entire world. A texture-array
-    // dim is sliced in full so the rescale stays stable across frames.
+    // Sample a patch sized to the spatial chunk — for coarse grids that's the
+    // whole plane; for high-res sharded grids it bounds the read to ~one shard.
+    // A texture-array dim is sliced in full so rescale stays stable across frames.
     const nd = arr.shape.length;
     const latSize = arr.shape[nd - 2] ?? 0;
     const lonSize = arr.shape[nd - 1] ?? 0;
     const patchH = Math.min(arr.chunks[nd - 2] ?? latSize, latSize);
     const patchW = Math.min(arr.chunks[nd - 1] ?? lonSize, lonSize);
-    const latStart = Math.max(0, Math.floor((latSize - patchH) / 2));
-    const lonStart = Math.max(0, Math.floor((lonSize - patchW) / 2));
-    const sliceSpec: (number | zarr.Slice | null)[] = [
-      ...variableMeta.dims.map((d) =>
-        d.name === variableMeta.textureDim?.name
-          ? null
-          : (state.dimIndices[d.name] ?? 0),
-      ),
-      zarr.slice(latStart, latStart + patchH),
-      zarr.slice(lonStart, lonStart + patchW),
-    ];
-    const chunk = await zarr.get(
-      arr as zarr.Array<zarr.NumberDataType, zarr.Readable>,
-      sliceSpec,
-      { signal },
-    );
-    if (signal.aborted) return null;
     const fill =
       variableMeta.fillValue !== null &&
       Number.isFinite(variableMeta.fillValue) &&
       variableMeta.fillValue !== 0
         ? variableMeta.fillValue
         : null;
-    // CF-decode to physical units so the auto rescale matches the rendered
-    // (decoded) texture; fill → NaN, which buildBandStats skips.
-    const raw = chunk.data as ArrayLike<number>;
-    const decoded = new Float32Array(raw.length);
-    for (let i = 0; i < raw.length; i++) {
-      const v = Number(raw[i]);
-      decoded[i] =
-        fill !== null && v === fill
-          ? Number.NaN
-          : v * variableMeta.scaleFactor + variableMeta.addOffset;
+    const dimSlices = variableMeta.dims.map((d) =>
+      d.name === variableMeta.textureDim?.name
+        ? null
+        : (state.dimIndices[d.name] ?? 0),
+    );
+    // Try a few positions: centre first (works for most stores), then
+    // upper-right / upper-left as fallbacks for land-only datasets (e.g.
+    // OlmoEarth) whose centre patch falls in an ocean-only region.
+    const candidates: [number, number][] = [[0.5, 0.5], [0.2, 0.8], [0.2, 0.2]];
+    for (const [latFrac, lonFrac] of candidates) {
+      if (signal.aborted) return null;
+      const latStart = Math.max(0, Math.floor((latSize - patchH) * latFrac));
+      const lonStart = Math.max(0, Math.floor((lonSize - patchW) * lonFrac));
+      const sliceSpec: (number | zarr.Slice | null)[] = [
+        ...dimSlices,
+        zarr.slice(latStart, latStart + patchH),
+        zarr.slice(lonStart, lonStart + patchW),
+      ];
+      const chunk = await zarr.get(
+        arr as zarr.Array<zarr.NumberDataType, zarr.Readable>,
+        sliceSpec,
+        { signal },
+      );
+      if (signal.aborted) return null;
+      // CF-decode to physical units; fill → NaN, which buildBandStats skips.
+      const raw = chunk.data as ArrayLike<number>;
+      const decoded = new Float32Array(raw.length);
+      for (let i = 0; i < raw.length; i++) {
+        const v = Number(raw[i]);
+        decoded[i] =
+          fill !== null && v === fill
+            ? Number.NaN
+            : v * variableMeta.scaleFactor + variableMeta.addOffset;
+      }
+      const stats = buildBandStats(decoded, null);
+      if (stats) return autoStatsFromGlobal(stats);
     }
-    const stats = buildBandStats(decoded, null);
-    if (!stats) return null;
-    return autoStatsFromGlobal(stats);
+    return null;
   },
 };
 
@@ -1145,7 +1253,7 @@ function serializeDims(dimIndices: Record<string, number>): string {
  * every frame of all of them). Computed identically in `buildLayer` (cache /
  * sample-tile key) and `sampleValue` (read) so they always agree. Equals the
  * texture path's `chunkKey`, so changing a memory dim is a cache hit. */
-function sampleKeyFor(
+export function sampleKeyFor(
   state: ScalarGridState,
   variable: ScalarGridVariable,
 ): string {
