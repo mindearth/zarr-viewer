@@ -76,12 +76,31 @@ export const bandCompositeProfile: ZarrProfile<BandCompositeState, BandComposite
     // Leading (non-band, non-spatial) axis is the time/year dim, if any.
     const yearCount = nd >= 4 ? (embeddings.shape[0] ?? 0) : 1;
     const bandCount = embeddings.shape[nd - 3] ?? 0;
+    // For nested variables (e.g. utm12/embeddings), the root group carries
+    // store-wide attrs that may not be GeoZarr-compliant for a single tile
+    // region. Use the parent group's attrs instead — they carry the
+    // zone-specific spatial:transform/proj:code that ZarrLayer needs.
+    let rootAttrs: unknown = opened.group.attrs;
+    const parentPath = name.includes("/")
+      ? name.split("/").slice(0, -1).join("/")
+      : null;
+    if (parentPath) {
+      try {
+        const parentGroup = await zarr.open(
+          opened.group.resolve(parentPath),
+          { kind: "group" },
+        );
+        rootAttrs = parentGroup.attrs;
+      } catch {
+        // parent group not openable — fall back to root attrs
+      }
+    }
     return {
       url,
       variable: name,
       group: opened.group,
       embeddings,
-      rootAttrs: opened.group.attrs,
+      rootAttrs,
       bandLabels,
       yearCount,
       bandCount,
