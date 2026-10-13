@@ -1203,10 +1203,20 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
         ? null
         : (state.dimIndices[d.name] ?? 0),
     );
-    // Try a few positions: centre first (works for most stores), then
-    // upper-right / upper-left as fallbacks for land-only datasets (e.g.
-    // OlmoEarth) whose centre patch falls in an ocean-only region.
-    const candidates: [number, number][] = [[0.5, 0.5], [0.2, 0.8], [0.2, 0.2]];
+    // Try positions spread across the array. Centre first (works for most
+    // stores), then a grid covering upper/lower thirds and extremes — needed
+    // for land-only sparse datasets (e.g. OlmoEarth UTM zones) where the
+    // centre and "upper" 20% may still be entirely ocean-fill.
+    const candidates: [number, number][] = [
+      [0.5, 0.5],
+      [0.2, 0.8],
+      [0.2, 0.2],
+      [0.1, 0.5],
+      [0.1, 0.8],
+      [0.1, 0.2],
+      [0.8, 0.5],
+      [0.9, 0.5],
+    ];
     for (const [latFrac, lonFrac] of candidates) {
       if (signal.aborted) return null;
       const latStart = Math.max(0, Math.floor((latSize - patchH) * latFrac));
