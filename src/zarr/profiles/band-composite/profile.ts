@@ -26,7 +26,7 @@ async function findBandVariable(
     ? store.contents().filter((e) => e.kind === "array").map((e) => e.path.replace(/^\/+/, ""))
     : ["embeddings"];
   for (const path of names) {
-    if (!path || path.includes("/")) continue;
+    if (!path) continue;
     let arr: zarr.Array<zarr.DataType, zarr.Readable>;
     try {
       arr = await zarr.open(group.resolve(path), { kind: "array" });

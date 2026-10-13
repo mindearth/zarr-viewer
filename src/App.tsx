@@ -55,6 +55,7 @@ import {
 import { MultiscaleStoreError } from "./zarr/multiscale";
 import { ProjectedGridStoreError } from "./zarr/projected";
 import { OmeZarrStoreError } from "./zarr/profiles/image-orthographic/ome";
+import { BandCompositeStoreError } from "./zarr/profiles/band-composite/errors";
 import { getProfile } from "./zarr/profiles";
 import {
   buildExampleLoadPatch,
@@ -386,6 +387,15 @@ export default function App() {
           if (!state.profileId && state.url) {
             log.info("switching to projected-grid profile");
             setAutoProfile({ url: state.url, id: "projected-grid" });
+          }
+          return;
+        }
+        if (err instanceof BandCompositeStoreError) {
+          // The default profile detected an int8 multi-band (embedding) array
+          // → switch to the band-composite profile. No error toast.
+          if (!state.profileId && state.url) {
+            log.info("switching to band-composite profile");
+            setAutoProfile({ url: state.url, id: "band-composite" });
           }
           return;
         }
