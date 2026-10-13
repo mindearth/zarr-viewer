@@ -332,6 +332,7 @@ export default function App() {
         const ctx = await profile.prepare(state.url!, ctrl.signal, {
           branch: state.branch,
           snapshot: state.snapshot,
+          variable: new URLSearchParams(window.location.search).get("var") ?? undefined,
         });
         if (ctrl.signal.aborted) return;
         log.info("profile context ready");
