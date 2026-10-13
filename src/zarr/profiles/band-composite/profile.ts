@@ -6,7 +6,7 @@ import { spatialTileSize } from "../../chunk-size";
 import { asConsolidated, openV3Group } from "../../load-zarr";
 import type { ZarrProfile } from "../../profile";
 import { fetchBandLabels } from "./band-labels";
-import { MIN_ZOOM, NUM_BANDS } from "./constants";
+import { MIN_ZOOM } from "./constants";
 import { BandCompositeControls } from "./controls";
 import { makeRgbRenderTile } from "./render-tile";
 import { getBandCompositeTileData } from "./tile-loader";
@@ -197,5 +197,5 @@ export const bandCompositeProfile: ZarrProfile<BandCompositeState, BandComposite
 
 function clampBand(n: number): number {
   if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(NUM_BANDS - 1, Math.floor(n)));
+  return Math.max(0, Math.min(255, Math.floor(n)));
 }
