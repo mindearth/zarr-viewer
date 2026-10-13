@@ -22,14 +22,20 @@ export function BandCompositeControls({
             aria-label="rescaleMin"
             step={0.01}
             value={state.rescaleMin}
-            onChange={(e) => update({ rescaleMin: Number(e.target.value) })}
+            onChange={(e) => {
+              const v = e.target.valueAsNumber;
+              if (!isNaN(v)) update({ rescaleMin: v });
+            }}
           />
           <input
             type="number"
             aria-label="rescaleMax"
             step={0.01}
             value={state.rescaleMax}
-            onChange={(e) => update({ rescaleMax: Number(e.target.value) })}
+            onChange={(e) => {
+              const v = e.target.valueAsNumber;
+              if (!isNaN(v)) update({ rescaleMax: v });
+            }}
           />
         </div>
       </div>
