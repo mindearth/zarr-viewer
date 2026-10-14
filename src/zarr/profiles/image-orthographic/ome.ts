@@ -9,6 +9,8 @@ const log = createLogger("ome");
 type OmeBlock = {
   multiscales?: {
     axes?: OmeAxis[];
+    /** v0.6: axes are inside coordinateSystems instead of top-level. */
+    coordinateSystems?: { axes?: OmeAxis[] }[];
     datasets?: { path: string; coordinateTransformations?: unknown[] }[];
   }[];
   omero?: { channels?: unknown[] };
@@ -118,19 +120,25 @@ async function resolveMultiscaleGroup(
 }
 
 /** Pull the per-axis `scale` vector out of a dataset's coordinateTransformations
- * (OME requires exactly one `scale`; translation is optional and ignored). */
+ * (OME requires exactly one `scale`; translation is optional and ignored).
+ * v0.6 wraps the scale inside a `sequence` transform — recurse into it. */
+function findScale(transforms: unknown[]): number[] | null {
+  for (const t of transforms) {
+    if (typeof t !== "object" || t === null) continue;
+    const tt = t as { type?: string; scale?: unknown; transformations?: unknown[] };
+    if (tt.type === "scale" && Array.isArray(tt.scale)) return tt.scale as number[];
+    if (tt.type === "sequence" && Array.isArray(tt.transformations)) {
+      const nested = findScale(tt.transformations);
+      if (nested !== null) return nested;
+    }
+  }
+  return null;
+}
+
 function scaleOf(transforms: unknown[] | undefined, ndim: number): number[] {
   if (Array.isArray(transforms)) {
-    for (const t of transforms) {
-      if (
-        typeof t === "object" &&
-        t !== null &&
-        (t as { type?: string }).type === "scale" &&
-        Array.isArray((t as { scale?: unknown }).scale)
-      ) {
-        return (t as { scale: number[] }).scale;
-      }
-    }
+    const found = findScale(transforms);
+    if (found !== null) return found;
   }
   return new Array(ndim).fill(1);
 }
@@ -181,7 +189,9 @@ export async function parseOme(
 ): Promise<ParsedOme> {
   const { group, seriesPath } = await resolveMultiscaleGroup(root, signal);
   const ms = omeOf(group)!.multiscales![0]!;
-  const axes = (ms.axes ?? []).map((a) => ({
+  // v0.4/v0.5: axes at ms.axes; v0.6: axes inside ms.coordinateSystems[0].axes
+  const rawAxes = ms.axes ?? ms.coordinateSystems?.[0]?.axes ?? [];
+  const axes = rawAxes.map((a) => ({
     name: a.name,
     type: a.type,
     unit: a.unit,
