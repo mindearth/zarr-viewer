@@ -1,6 +1,7 @@
 import { COLORMAP_INDEX } from "@developmentseed/deck.gl-raster/gpu-modules";
 import colormapsPngUrl from "@developmentseed/deck.gl-raster/gpu-modules/colormaps.png";
 import { ColormapPicker, type ColormapOption } from "../../../components/ColormapPicker";
+import { DebouncedSlider } from "../../../components/DebouncedSlider";
 import { RangeSlider } from "../../../components/RangeSlider";
 import { StepperRange } from "../../../components/StepperRange";
 import { dimTint, tintLabelStyle } from "../../dim-colors";
@@ -131,13 +132,15 @@ export function ImageOrthographicControls({
         />
       )}
       {scrubAxes.map((axis) => (
-        <AxisSlider
+        <DebouncedSlider
           key={axis.name}
           label={axis.name}
           value={state.indices[axis.name] ?? 0}
-          max={axis.size - 1}
+          min={0}
+          max={Math.max(0, axis.size - 1)}
           tint={dimTint(axis.name, tintOrder)}
-          onChange={(v) =>
+          formatValue={(v) => `${v} / ${axis.size - 1}`}
+          onCommit={(v) =>
             update({ indices: { ...state.indices, [axis.name]: v } })
           }
         />
