@@ -145,20 +145,38 @@ export const imageOrthographicProfile: ZarrProfile<
   statsDeps: (s) => [s.channel, JSON.stringify(s.indices)],
   async computeAutoStats({ ctx, state, signal }) {
     const level = ctx.levels[ctx.levels.length - 1]!;
-    const sel = buildSelection(
-      ctx.axes,
-      ctx.channelAxisIndex,
-      ctx.spatialAxes,
-      state.channel,
-      state.indices,
-    );
-    const chunk = await zarr.get(
-      level.array as zarr.Array<zarr.NumberDataType, zarr.Readable>,
-      sel,
-      { signal },
-    );
-    const stats = buildBandStats(chunk.data as ArrayLike<number>, null);
-    return stats ? autoStatsFromGlobal(stats) : null;
+    const arr = level.array as zarr.Array<zarr.NumberDataType, zarr.Readable>;
+
+    // Build candidate index sets for "other" axes (z/t). For 3D annotation
+    // volumes many z-slices are all-background (constant 0), so if the current
+    // slice is constant we probe additional positions before giving up.
+    const otherCandidates: Record<string, number>[] = [state.indices];
+    if (ctx.otherAxes.length > 0) {
+      for (const frac of [0.5, 0.25, 0.75, 0.1, 0.9, 0.33, 0.67]) {
+        const next: Record<string, number> = { ...state.indices };
+        for (const ax of ctx.otherAxes) {
+          next[ax.name] = Math.floor(ax.size * frac);
+        }
+        otherCandidates.push(next);
+      }
+    }
+
+    let fallback = null;
+    for (const indices of otherCandidates) {
+      const sel = buildSelection(
+        ctx.axes,
+        ctx.channelAxisIndex,
+        ctx.spatialAxes,
+        state.channel,
+        indices,
+      );
+      const chunk = await zarr.get(arr, sel, { signal });
+      const stats = buildBandStats(chunk.data as ArrayLike<number>, null);
+      if (!stats) continue;
+      if (stats.min < stats.max) return autoStatsFromGlobal(stats);
+      fallback ??= stats;
+    }
+    return fallback ? autoStatsFromGlobal(fallback) : null;
   },
 
   pyramidLevelCount: (ctx) => ctx.levels.length,
