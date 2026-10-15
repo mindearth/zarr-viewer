@@ -10,6 +10,16 @@ describe("isOmeZarrAttrs", () => {
     expect(isOmeZarrAttrs(attrs)).toBe(true);
   });
 
+  it("detects OME-Zarr v0.6 (ome wrapper, coordinateSystems instead of axes)", () => {
+    const attrs = {
+      ome: {
+        version: "0.6",
+        multiscales: [{ coordinateSystems: [{ axes: [{ name: "z", type: "space" }] }] }],
+      },
+    };
+    expect(isOmeZarrAttrs(attrs)).toBe(true);
+  });
+
   it("detects OME-Zarr v0.5 plate (ome wrapper)", () => {
     const attrs = { ome: { plate: { wells: [{ path: "A/1" }] } } };
     expect(isOmeZarrAttrs(attrs)).toBe(true);
