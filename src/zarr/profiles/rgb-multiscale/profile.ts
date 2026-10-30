@@ -10,6 +10,9 @@ import { discoverPyramids } from "../multiscale-grid/discovery";
 import { enumerateLayoutVariables } from "../multiscale-grid/profile";
 import { buildRgbRenderTile, makeRgbTileLoader } from "./tile";
 
+/** Multiplier on the tileset's LOD pixel ratio; 0.5 = one level coarser, 1 = exact device-pixel match. */
+const RGB_LOD_SCALE = 0.5;
+
 type RgbMultiscaleContext = ProfileBaseContext & {
   variable: string;
   /** "int8" | "uint8" */
@@ -105,6 +108,10 @@ export const rgbMultiscaleProfile: ZarrProfile<object, RgbMultiscaleContext> = {
       getTileData: makeRgbTileLoader(ctx.dtype === "int8", ctx.bands),
       renderTile: buildRgbRenderTile(ctx.bands),
       opacity: chassisState.opacity,
+      // Pick one pyramid level coarser than the device-pixel match: the source
+      // is a ~0.6 m/px aerial mosaic where full-DPR detail costs ~4x the tiles
+      // (each tile = 3-4 separate band range reads) for modest visual gain.
+      ...({ tileLodScale: RGB_LOD_SCALE } as Record<string, unknown>),
       maxRequests: 20,
       maxCacheSize: 64,
       ...({ beforeId: basemapBeforeId } as Record<string, unknown>),

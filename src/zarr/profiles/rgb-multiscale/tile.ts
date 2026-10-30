@@ -13,8 +13,10 @@ import { reportTileError, reportTileResult } from "../../tile-error";
 const log = createLogger("tiles");
 
 /** Tile loader for an int8/uint8 RGB(A) composite. The layer's selection leaves
- * the band dim whole, so the sliced chunk is `[nBands, H, W]` (3 = RGB, 4 =
- * RGBA, 4th band is alpha); each plane becomes an
+ * the band dim whole (`null`); for RGBA we narrow it to the first three bands
+ * so the alpha band is never fetched, and derive alpha as "any of R,G,B
+ * non-zero" (missing/empty chunks are all-zero, hence transparent; a pixel
+ * that is truly pure black becomes transparent too). Each plane becomes an
  * r8unorm texture. int8 is shifted by +128 onto 0..255 (the linear mapping of
  * its full range); uint8 is used as-is. */
 export function makeRgbTileLoader(signed: boolean, nBands: 3 | 4) {
@@ -24,9 +26,12 @@ export function makeRgbTileLoader(signed: boolean, nBands: 3 | 4) {
   ): Promise<MultiBandTileData> {
     const { device, sliceSpec, signal, width, height } = options;
     tileLoadStart(options.z + 1);
+    const readBands = nBands === 4 ? 3 : nBands;
+    const bandSlot = sliceSpec.findIndex((s) => s === null);
+    const spec = bandSlot < 0 ? sliceSpec : sliceSpec.map((s, i) => (i === bandSlot ? zarr.slice(0, readBands) : s));
     let chunk: Awaited<ReturnType<typeof zarr.get>>;
     try {
-      chunk = await zarr.get(arr as zarr.Array<zarr.NumberDataType, zarr.Readable>, sliceSpec, { signal });
+      chunk = await zarr.get(arr as zarr.Array<zarr.NumberDataType, zarr.Readable>, spec, { signal });
     } catch (err) {
       tileLoadEnd();
       reportTileError(err);
@@ -36,20 +41,27 @@ export function makeRgbTileLoader(signed: boolean, nBands: 3 | 4) {
     tileLoadEnd();
     reportTileResult(true);
     const [bands, h, w] = chunk.shape;
-    if (chunk.shape.length !== 3 || bands !== nBands || h !== height || w !== width) {
+    if (chunk.shape.length !== 3 || bands !== readBands || h !== height || w !== width) {
       throw new Error(
-        `RGB tile expected [${nBands},${height},${width}]; got [${chunk.shape.join(",")}]`,
+        `RGB tile expected [${readBands},${height},${width}]; got [${chunk.shape.join(",")}]`,
       );
     }
     const src = chunk.data as Uint8Array | Int8Array;
     const plane = width * height;
-    const planes = Array.from({ length: nBands }, (_, i) => {
+    const planes = Array.from({ length: readBands }, (_, i) => {
       const out = new Uint8Array(plane);
       const base = i * plane;
       if (signed) for (let j = 0; j < plane; j++) out[j] = src[base + j]! + 128;
       else for (let j = 0; j < plane; j++) out[j] = src[base + j]!;
       return { key: String(i + 1), data: out };
     });
+    if (nBands === 4) {
+      const alpha = new Uint8Array(plane);
+      for (let j = 0; j < plane; j++) {
+        if (src[j]! | src[plane + j]! | src[2 * plane + j]!) alpha[j] = 255;
+      }
+      planes.push({ key: "4", data: alpha });
+    }
     return buildMultiBandTile(device, planes, width, height, null);
   };
 }
